@@ -929,6 +929,40 @@ def _concat_translations(translations: List[Translation], start_id: int, stop_id
     return Translation(target_ids, attention_matrix_combined, score, beam_histories)
 
 
+def take_module(batch_size, beam_size, max_output_length, encoded_source_length, context):
+    indices = mx.sym.Variable('best_hyp_indices', dtype='int32')
+    inputs = [mx.sym.Variable('sequences', dtype='int32'),
+              mx.sym.Variable('finished', dtype='int32'),
+              mx.sym.Variable('lengths', dtype='int32'),
+              mx.sym.Variable('attentions')]
+    sym = mx.sym.Group([mx.sym.take(inp, indices, name='%s_taken' % inp.name) for inp in inputs])
+    shapes = [mx.io.DataDesc(name='best_hyp_indices', shape=(batch_size*beam_size,), dtype='int32'),
+              mx.io.DataDesc(name='sequences', shape=(batch_size * beam_size, max_output_length), dtype='int32'),
+              mx.io.DataDesc(name='finished', shape=(batch_size * beam_size,), dtype='int32'),
+              mx.io.DataDesc(name='lengths', shape=(batch_size * beam_size, 1), dtype='int32'),
+              mx.io.DataDesc(name='attentions', shape=(batch_size * beam_size, max_output_length, encoded_source_length))]
+    mod = mx.mod.Module(symbol=sym, data_names=sym.list_arguments(), label_names=[], context=context)
+
+    mod.bind(data_shapes=shapes, for_training=False, grad_req="null")
+    mod.init_params()
+    return mod
+
+
+class Taker(mx.gluon.HybridBlock):
+    def __init__(self):
+        super().__init__()
+
+    def hybrid_forward(self, F, indices, sequences, finished, lengths, attentions):
+        return F.take(sequences, indices), F.take(finished, indices), F.take(lengths, indices), F.take(attentions, indices)
+
+"""
+sequences: (batch*beam, output_length)
+finished: (batch*beam,)
+lengths: (batch*beam, 1)
+attentions: (batch*beam, output_length, encoded_source_length)
+"""
+
+
 class Translator:
     """
     Translator uses one or several models to translate input.
@@ -1377,6 +1411,9 @@ class Translator:
                                dtype='int32')
         sequences[:, 0] = self.start_id
 
+        taker = Taker()
+        taker.hybridize()
+
         # Beam history
         beam_histories = None  # type: Optional[List[BeamHistory]]
         if self.store_beam:
@@ -1494,24 +1531,29 @@ class Translator:
             if self.restrict_lexicon:
                 best_word_indices[:] = vocab_slice_ids.take(best_word_indices)
 
-            # (4) Normalize the scores of newly finished hypotheses. Note that after this until the
-            # next call to topk(), hypotheses may not be in sorted order.
-            finished = mx.nd.take(finished, best_hyp_indices)
-            lengths = mx.nd.take(lengths, best_hyp_indices)
+            attention_scores = attention_scores.take(best_hyp_indices)
+            if True:
+                sequences, finished, lengths, attentions = taker(best_hyp_indices, sequences, finished, lengths, attentions)
+            else:
+                # (4) Update the beam with the hypotheses and their properties for the winning hypotheses (ascending)
+                sequences = sequences.take(best_hyp_indices)
+
+                attentions = attentions.take(best_hyp_indices)
+
+                # (5) Normalize the scores of newly finished hypotheses. Note that after this until the
+                # next call to topk(), hypotheses may not be in sorted order.
+                finished = finished.take(best_hyp_indices)
+                lengths = lengths.take(best_hyp_indices)
+
             all_finished = ((best_word_indices == C.PAD_ID) + (best_word_indices == self.vocab_target[C.EOS_SYMBOL]))
             newly_finished = all_finished - finished
             scores_accumulated = mx.nd.where(newly_finished, scores_accumulated / self.length_penalty(lengths),
                                              scores_accumulated)
             finished = all_finished
 
-            # (5) Prune out low-probability hypotheses. Pruning works by setting entries `inactive`.
+            # (6) Prune out low-probability hypotheses. Pruning works by setting entries `inactive`.
             if self.beam_prune > 0.0:
                 self._prune(scores_accumulated, best_word_indices, inactive, finished)
-
-            # (6) Update the beam with the hypotheses and their properties for the beam_size winning hypotheses (ascending)
-            sequences = mx.nd.take(sequences, best_hyp_indices)
-            attention_scores = mx.nd.take(attention_scores, best_hyp_indices)
-            attentions = mx.nd.take(attentions, best_hyp_indices)
 
             # (7) update best hypotheses, their attention lists and lengths (only for non-finished hyps)
             # pylint: disable=unsupported-assignment-operation
