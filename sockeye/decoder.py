@@ -251,11 +251,11 @@ class TransformerDecoder(Decoder):
         """
 
         # (batch_size * heads, max_length)
-        source_bias = transformer.get_variable_length_bias(lengths=source_encoded_lengths,
-                                                           max_length=source_encoded_max_length,
-                                                           num_heads=self.config.attention_heads,
-                                                           fold_heads=True,
-                                                           name="%ssource_bias" % self.prefix)
+        source_bias = transformer.get_valid_length_mask_for(data=source_encoded,
+                                                            lengths=source_encoded_lengths,
+                                                            num_heads=self.config.attention_heads,
+                                                            fold_heads=True,
+                                                            name="%ssource_bias" % self.prefix)
         # (batch_size * heads, 1, max_length)
         source_bias = mx.sym.expand_dims(source_bias, axis=1)
 
@@ -305,11 +305,11 @@ class TransformerDecoder(Decoder):
         target = mx.sym.expand_dims(target_embed_prev, axis=1)
 
         # (batch_size * heads, max_length)
-        source_bias = transformer.get_variable_length_bias(lengths=source_encoded_lengths,
-                                                           max_length=source_encoded_max_length,
-                                                           num_heads=self.config.attention_heads,
-                                                           fold_heads=True,
-                                                           name="%ssource_bias" % self.prefix)
+        source_bias = transformer.get_valid_length_mask_for(data=source_encoded,
+                                                            lengths=source_encoded_lengths,
+                                                            num_heads=self.config.attention_heads,
+                                                            fold_heads=True,
+                                                            name="%ssource_bias" % self.prefix)
         # (batch_size * heads, 1, max_length)
         source_bias = mx.sym.expand_dims(source_bias, axis=1)
 
@@ -1086,7 +1086,7 @@ class ConvolutionalDecoder(Decoder):
         for layer, att_layer in zip(self.layers, self.attention_layers):
             # (batch_size, target_seq_len, num_hidden)
             target_hidden = layer(mx.sym.Dropout(target_hidden, p=drop_prob) if drop_prob > 0 else target_hidden,
-                                  target_embed_lengths, target_embed_max_length)
+                                  target_embed_lengths)
 
             # (batch_size, target_seq_len, num_embed)
             context = att_layer(target_hidden, source_encoded, source_encoded_lengths)
