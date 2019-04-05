@@ -10,6 +10,12 @@ Note that Sockeye has checks in place to not translate with an old model that wa
 
 Each version section may have have subsections for: _Added_, _Changed_, _Removed_, _Deprecated_, and _Fixed_.
 
+## [1.18.91]
+### Added
+- Added ability to accumulate gradients over multiple batches (--update-interval). This allows simulation of large
+  batch sizes on environments with limited memory. For example: training with `--batch-size 4096 --update-interval 2`
+  should be close to training with `--batch-size 8192` at smaller memory footprint.
+
 ## [1.18.90]
 ### Changed
 - Updated to [MXNet 1.4.0](https://github.com/apache/incubator-mxnet/tree/1.4.0)
