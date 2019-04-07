@@ -268,21 +268,53 @@ class TransformerFeedForward(mx.gluon.HybridBlock):
         return y
 
 
-def get_valid_length_mask_for(data: mx.sym.Symbol,
-                              lengths: mx.sym.Symbol,
-                              num_heads: Optional[int] = None,
-                              fold_heads: bool = True,
-                              name: str = '') -> mx.sym.Symbol:
+class TransformerValidLengthMask(mx.gluon.HybridBlock):
     """
     Returns bias/mask for variable sequence lengths.
 
-    :param data: Input data to mask. Shape: (batch, seq_len, _).
-    :param lengths: Sequence lengths. Shape: (batch,).
     :param num_heads: Number of attention heads.
     :param fold_heads: Whether to fold heads dimension into batch dimension.
     :param name: Name of symbol.
     :return: Bias symbol. Shape: (batch, seq_len)
     """
+
+    def __init__(self, num_heads: Optional[int] = None, fold_heads: bool = True, name: str = '') -> None:
+        super().__init__(prefix=name)
+        self.num_heads = num_heads
+        self.fold_heads = fold_heads
+
+    def hybrid_forward(self, F, data, lengths):
+        """
+        Returns bias/mask for variable sequence lengths.
+
+        :param F: symbolic or ndarray.
+        :param data: Input data to mask. Shape: (batch, seq_len, _).
+        :param lengths: Sequence lengths. Shape: (batch,).
+        :return:
+        """
+        # (batch, 1)
+        mask = F.reshape(F.zeros_like(lengths), shape=(-1, 1))
+        # (batch, seq_len)
+        mask = F.broadcast_like(mask, data, lhs_axes=(1,), rhs_axes=(1,))
+        # (batch_size, max_length)
+        mask = F.SequenceMask(data=mask,
+                              use_sequence_length=True,
+                              sequence_length=lengths,
+                              axis=1,
+                              value=C.LARGE_NEGATIVE_VALUE)
+        if self.num_heads is not None:
+            # (batch_size, heads, max_length) if fold_heads == False else (batch_size * heads, max_length)
+            mask = layers.broadcast_to_heads(F, mask, self.num_heads, ndim=2, fold_heads=self.fold_heads)
+
+        return mx.sym.BlockGrad(mask)
+
+
+def get_valid_length_mask_for(data: mx.sym.Symbol,
+                              lengths: mx.sym.Symbol,
+                              num_heads: Optional[int] = None,
+                              fold_heads: bool = True,
+                              name: str = '') -> mx.sym.Symbol:
+
     # (batch, 1)
     zeros = mx.sym.reshape(mx.sym.zeros_like(lengths), shape=(-1, 1))
     # (batch, seq_len)
