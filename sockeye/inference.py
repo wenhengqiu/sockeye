@@ -621,29 +621,44 @@ class TranslatorInput:
     :param sentence_id: Sentence id.
     :param tokens: List of input tokens.
     :param factors: Optional list of additional factor sequences.
+    :param restrict_lexicon_name: Optional name (key) of lexicon for vocabulary
+                                  selection.
     :param constraints: Optional list of target-side constraints.
     :param pass_through_dict: Optional raw dictionary of arbitrary input data.
     """
 
-    __slots__ = ('sentence_id', 'tokens', 'factors', 'constraints', 'avoid_list', 'pass_through_dict')
+    __slots__ = ('sentence_id',
+                 'tokens',
+                 'factors',
+                 'restrict_lexicon_name',
+                 'constraints',
+                 'avoid_list',
+                 'pass_through_dict')
 
     def __init__(self,
                  sentence_id: SentenceId,
                  tokens: Tokens,
                  factors: Optional[List[Tokens]] = None,
+                 restrict_lexicon_name: Optional[str] = None,
                  constraints: Optional[List[Tokens]] = None,
                  avoid_list: Optional[List[Tokens]] = None,
                  pass_through_dict: Optional[Dict] = None) -> None:
         self.sentence_id = sentence_id
         self.tokens = tokens
         self.factors = factors
+        self.restrict_lexicon_name = restrict_lexicon_name
         self.constraints = constraints
         self.avoid_list = avoid_list
         self.pass_through_dict = pass_through_dict
 
     def __str__(self):
-        return 'TranslatorInput(%s, %s, factors=%s, constraints=%s, avoid=%s)' \
-            % (self.sentence_id, self.tokens, self.factors, self.constraints, self.avoid_list)
+        return 'TranslatorInput(%s, %s, factors=%s, restrict_lexicon=%s, constraints=%s, avoid=%s)' \
+            % (self.sentence_id,
+               self.tokens,
+               self.factors,
+               self.restrict_lexicon_name,
+               self.constraints,
+               self.avoid_list)
 
     def __len__(self):
         return len(self.tokens)
@@ -679,6 +694,7 @@ class TranslatorInput:
             yield TranslatorInput(sentence_id=self.sentence_id,
                                   tokens=self.tokens[i:i + chunk_size],
                                   factors=factors,
+                                  restrict_lexicon_name=self.restrict_lexicon_name,
                                   constraints=constraints,
                                   avoid_list=self.avoid_list,
                                   pass_through_dict=pass_through_dict)
@@ -691,6 +707,7 @@ class TranslatorInput:
                                tokens=self.tokens + [C.EOS_SYMBOL],
                                factors=[factor + [C.EOS_SYMBOL] for factor in
                                         self.factors] if self.factors is not None else None,
+                               restrict_lexicon_name=self.restrict_lexicon_name,
                                constraints=self.constraints,
                                avoid_list=self.avoid_list,
                                pass_through_dict=self.pass_through_dict)
@@ -718,7 +735,9 @@ def make_input_from_plain_string(sentence_id: SentenceId, string: str) -> Transl
     return TranslatorInput(sentence_id, tokens=list(data_io.get_tokens(string)), factors=None)
 
 
-def make_input_from_json_string(sentence_id: SentenceId, json_string: str) -> TranslatorInput:
+def make_input_from_json_string(sentence_id: SentenceId,
+                                json_string: str,
+                                restrict_lexicon_names: Set[str]) -> TranslatorInput:
     """
     Returns a TranslatorInput object from a JSON object, serialized as a string.
 
@@ -727,18 +746,21 @@ def make_input_from_json_string(sentence_id: SentenceId, json_string: str) -> Tr
            and optionally a key "factors" that maps to a list of strings, each of which representing a factor sequence
            for the input text. Constraints and an avoid list can also be added through the "constraints" and "avoid"
            keys.
+    :param restrict_lexicon_names: Set of valid names (values) for restrict_lexicon.
     :return: A TranslatorInput.
     """
     try:
         jobj = json.loads(json_string, encoding=C.JSON_ENCODING)
-        return make_input_from_dict(sentence_id, jobj)
+        return make_input_from_dict(sentence_id, jobj, restrict_lexicon_names)
 
     except Exception as e:
         logger.exception(e, exc_info=True) if not is_python34() else logger.error(e)  # type: ignore
         return _bad_input(sentence_id, reason=json_string)
 
 
-def make_input_from_dict(sentence_id: SentenceId, input_dict: Dict) -> TranslatorInput:
+def make_input_from_dict(sentence_id: SentenceId,
+                         input_dict: Dict,
+                         restrict_lexicon_names: Set[str]) -> TranslatorInput:
     """
     Returns a TranslatorInput object from a JSON object, serialized as a string.
 
@@ -746,6 +768,7 @@ def make_input_from_dict(sentence_id: SentenceId, input_dict: Dict) -> Translato
     :param input_dict: A dict that must contain a key "text", mapping to the input text, and optionally a key "factors"
            that maps to a list of strings, each of which representing a factor sequence for the input text.
            Constraints and an avoid list can also be added through the "constraints" and "avoid" keys.
+    :param restrict_lexicon_names: Set of valid names (values) for restrict_lexicon.
     :return: A TranslatorInput.
     """
     try:
@@ -758,6 +781,13 @@ def make_input_from_dict(sentence_id: SentenceId, input_dict: Dict) -> Translato
             if not all(length == len(tokens) for length in lengths):
                 logger.error("Factors have different length than input text: %d vs. %s", len(tokens), str(lengths))
                 return _bad_input(sentence_id, reason=str(input_dict))
+
+        # Restrict lexicon name (key)
+        restrict_lexicon_name = input_dict.get(C.JSON_RESTRICT_LEXICON_KEY)
+        if restrict_lexicon_name not in restrict_lexicon_names:
+            logger.error("Unknown restrict_lexicon: %s.  Choices: %s",
+                         restrict_lexicon_name, ' '.join(sorted(restrict_lexicon_names)))
+            return _bad_input(sentence_id, reason=str(input_dict))
 
         # List of phrases to prevent from occuring in the output
         avoid_list = input_dict.get(C.JSON_AVOID_KEY)
@@ -781,7 +811,8 @@ def make_input_from_dict(sentence_id: SentenceId, input_dict: Dict) -> Translato
             constraints = [list(data_io.get_tokens(constraint)) for constraint in constraints]
 
         return TranslatorInput(sentence_id=sentence_id, tokens=tokens, factors=factors,
-                               constraints=constraints, avoid_list=avoid_list, pass_through_dict=input_dict)
+                               restrict_lexicon_name=restrict_lexicon_name, constraints=constraints,
+                               avoid_list=avoid_list, pass_through_dict=input_dict)
 
     except Exception as e:
         logger.exception(e, exc_info=True) if not is_python34() else logger.error(e)  # type: ignore
@@ -1182,7 +1213,8 @@ class Translator:
     :param source_vocabs: Source vocabularies.
     :param target_vocab: Target vocabulary.
     :param nbest_size: Size of nbest list of translations.
-    :param restrict_lexicon: Top-k lexicon to use for target vocabulary restriction.
+    :param restrict_lexicon: Top-k lexicon to use for target vocabulary restriction. Can be a dict
+                             of named lexicons.
     :param avoid_list: Global list of phrases to exclude from the output.
     :param store_beam: If True, store the beam search history and return it in the TranslatorOutput.
     :param strip_unknown_words: If True, removes any <unk> symbols from outputs.
@@ -1201,7 +1233,7 @@ class Translator:
                  source_vocabs: List[vocab.Vocab],
                  target_vocab: vocab.Vocab,
                  nbest_size: int = 1,
-                 restrict_lexicon: Optional[lexicon.TopKLexicon] = None,
+                 restrict_lexicon: Optional[Union[lexicon.TopKLexicon, Dict[str, lexicon.TopKLexicon]]] = None,
                  avoid_list: Optional[str] = None,
                  store_beam: bool = False,
                  strip_unknown_words: bool = False,
@@ -1215,6 +1247,9 @@ class Translator:
         self.vocab_target = target_vocab
         self.vocab_target_inv = vocab.reverse_vocab(self.vocab_target)
         self.restrict_lexicon = restrict_lexicon
+        self.restrict_lexicon_names = set()
+        if isinstance(self.restrict_lexicon, dict):
+            self.restrict_lexicon_names.update(self.restrict_lexicon.keys())
         self.store_beam = store_beam
         self.start_id = self.vocab_target[C.BOS_SYMBOL]
         assert C.PAD_ID == 0, "pad id should be 0"
@@ -1497,6 +1532,7 @@ class Translator:
     def _get_inference_input(self,
                              trans_inputs: List[TranslatorInput]) -> Tuple[mx.nd.NDArray,
                                                                            int,
+                                                                           Optional[lexicon.TopKLexicon],
                                                                            List[Optional[constrained.RawConstraintList]],
                                                                            List[Optional[constrained.RawConstraintList]],
                                                                            mx.nd.NDArray]:
@@ -1508,12 +1544,14 @@ class Translator:
 
         :param trans_inputs: List of TranslatorInputs.
         :return NDArray of source ids (shape=(batch_size, bucket_key, num_factors)),
-                bucket key, list of raw constraint lists, and list of phrases to avoid,
-                and an NDArray of maximum output lengths.
+                bucket key, lexicon for vocabulary restriction, list of raw constraint
+                lists, and list of phrases to avoid, and an NDArray of maximum output
+                lengths.
         """
         batch_size = len(trans_inputs)
         bucket_key = data_io.get_bucket(max(len(inp.tokens) for inp in trans_inputs), self.buckets_source)
         source = mx.nd.zeros((batch_size, bucket_key, self.num_source_factors), ctx=self.context)
+        restrict_lexicon = None  # type: Optional[lexicon.TopKLexicon]
         raw_constraints = [None] * batch_size  # type: List[Optional[constrained.RawConstraintList]]
         raw_avoid_list = [None] * batch_size  # type: List[Optional[constrained.RawConstraintList]]
 
@@ -1533,6 +1571,12 @@ class Translator:
 
                 source[j, :num_tokens, i] = data_io.tokens2ids(factor, self.source_vocabs[i])[:num_tokens]
 
+            if self.restrict_lexicon is not None:
+                if isinstance(self.restrict_lexicon, dict):
+                    restrict_lexicon = self.restrict_lexicon[trans_input.restrict_lexicon_name]
+                else:
+                    restrict_lexicon = self.restrict_lexicon
+
             if trans_input.constraints is not None:
                 raw_constraints[j] = [data_io.tokens2ids(phrase, self.vocab_target) for phrase in
                                       trans_input.constraints]
@@ -1544,7 +1588,7 @@ class Translator:
                     logger.warning("Sentence %s: %s was found in the list of phrases to avoid; "
                                    "this may indicate improper preprocessing.", trans_input.sentence_id, C.UNK_SYMBOL)
 
-        return source, bucket_key, raw_constraints, raw_avoid_list, mx.nd.array(max_output_lengths, ctx=self.context, dtype='int32')
+        return source, bucket_key, restrict_lexicon, raw_constraints, raw_avoid_list, mx.nd.array(max_output_lengths, ctx=self.context, dtype='int32')
 
     def _make_result(self,
                      trans_input: TranslatorInput,
@@ -1600,6 +1644,7 @@ class Translator:
     def _translate_nd(self,
                       source: mx.nd.NDArray,
                       source_length: int,
+                      restrict_lexicon: Optional[lexicon.TopKLexicon],
                       raw_constraints: List[Optional[constrained.RawConstraintList]],
                       raw_avoid_list: List[Optional[constrained.RawConstraintList]],
                       max_output_lengths: mx.nd.NDArray) -> List[Translation]:
@@ -1608,12 +1653,14 @@ class Translator:
 
         :param source: Source ids. Shape: (batch_size, bucket_key, num_factors).
         :param source_length: Bucket key.
+        :param restrict_lexicon: Lexicon to use for vocabulary restriction.
         :param raw_constraints: A list of optional constraint lists.
 
         :return: Sequence of translations.
         """
         return self._get_best_from_beam(*self._beam_search(source,
                                                            source_length,
+                                                           restrict_lexicon,
                                                            raw_constraints,
                                                            raw_avoid_list,
                                                            max_output_lengths))
@@ -1701,6 +1748,7 @@ class Translator:
     def _beam_search(self,
                      source: mx.nd.NDArray,
                      source_length: int,
+                     restrict_lexicon: Optional[lexicon.TopKLexicon],
                      raw_constraint_list: List[Optional[constrained.RawConstraintList]],
                      raw_avoid_list: List[Optional[constrained.RawConstraintList]],
                      max_output_lengths: mx.nd.NDArray) -> Tuple[np.ndarray,
@@ -1715,6 +1763,7 @@ class Translator:
 
         :param source: Source ids. Shape: (batch_size, bucket_key, num_factors).
         :param source_length: Max source length.
+        :param restrict_lexicon: Lexicon to use for vocabulary restriction.
         :param raw_constraint_list: A list of optional lists containing phrases (as lists of target word IDs)
                that must appear in each output.
         :param raw_avoid_list: A list of optional lists containing phrases (as lists of target word IDs)
@@ -1777,11 +1826,11 @@ class Translator:
         models_output_layer_w = list()
         models_output_layer_b = list()
         vocab_slice_ids = None  # type: mx.nd.NDArray
-        if self.restrict_lexicon:
+        if restrict_lexicon:
             source_words = utils.split(source, num_outputs=self.num_source_factors, axis=2, squeeze_axis=True)[0]
             # TODO: See note in method about migrating to pure MXNet when set operations are supported.
             #       We currently convert source to NumPy and target ids back to NDArray.
-            vocab_slice_ids = self.restrict_lexicon.get_trg_ids(source_words.astype("int32").asnumpy())
+            vocab_slice_ids = restrict_lexicon.get_trg_ids(source_words.astype("int32").asnumpy())
             if any(raw_constraint_list):
                 # Add the constraint IDs to the list of permissibled IDs, and then project them into the reduced space
                 constraint_ids = np.array([word_id for sent in raw_constraint_list for phr in sent for word_id in phr])
@@ -1877,7 +1926,7 @@ class Translator:
                     scores_accumulated)
 
             # Map from restricted to full vocab ids if needed
-            if self.restrict_lexicon:
+            if restrict_lexicon:
                 best_word_indices = vocab_slice_ids.take(best_word_indices)
 
             # (4) Reorder fixed-size beam data according to best_hyp_indices (ascending)
